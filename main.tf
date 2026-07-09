@@ -26,7 +26,7 @@ module "eks_cluster" {
   enable_irsa                  = true
   log_retention_days           = 90
 
-  # Node group — minimum 3 nodes so Vault HA Raft (3 replicas) can schedule
+  # Node group — 3 nodes so Vault HA Raft (3 replicas) can schedule
   node_groups = {
     dev = {
       instance_types = ["t3.medium"]
@@ -47,9 +47,58 @@ module "eks_cluster" {
   single_nat_gateway     = true
 
   addons = {
-    coredns            = { most_recent = true }
-    kube-proxy         = { most_recent = true }
-    vpc-cni            = { most_recent = true, before_compute = true }
-    aws-ebs-csi-driver = { most_recent = true }
+    coredns    = { most_recent = true }
+    kube-proxy = { most_recent = true }
+    vpc-cni    = { most_recent = true, before_compute = true }
+    aws-ebs-csi-driver = {
+      most_recent              = true
+      service_account_role_arn = aws_iam_role.ebs_csi.arn
+    }
   }
+}
+
+################################################################################
+# IRSA — IAM role for the EBS CSI driver service account
+################################################################################
+
+data "aws_iam_policy_document" "ebs_csi_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks_cluster.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks_cluster.oidc_provider}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks_cluster.oidc_provider}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  name_prefix        = "${var.cluster_name}-ebs-csi-"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume.json
+
+  tags = {
+    Environment = var.environment
+    Owner       = var.owner
+    CostCenter  = var.cost_center
+    Project     = var.project
+    ManagedBy   = "Terraform"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
