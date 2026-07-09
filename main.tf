@@ -26,14 +26,14 @@ module "eks_cluster" {
   enable_irsa                  = true
   log_retention_days           = 90
 
-  # Dev-sized node group
+  # Node group — minimum 3 nodes so Vault HA Raft (3 replicas) can schedule
   node_groups = {
     dev = {
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
-      min_size       = 1
-      max_size       = 3
-      desired_size   = 2
+      min_size       = 3
+      max_size       = 5
+      desired_size   = 3
       disk_size_gb   = 50
     }
   }
@@ -47,8 +47,9 @@ module "eks_cluster" {
   single_nat_gateway     = true
 
   addons = {
-    coredns    = { most_recent = true }
-    kube-proxy = { most_recent = true }
-    vpc-cni    = { most_recent = true, before_compute = true }
+    coredns            = { most_recent = true }
+    kube-proxy         = { most_recent = true }
+    vpc-cni            = { most_recent = true, before_compute = true }
+    aws-ebs-csi-driver = { most_recent = true }
   }
 }
