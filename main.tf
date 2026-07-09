@@ -31,7 +31,7 @@ module "eks_cluster" {
     dev = {
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
-      min_size       = 3
+      min_size       = 2
       max_size       = 5
       desired_size   = 3
       disk_size_gb   = 50
