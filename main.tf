@@ -8,7 +8,7 @@ provider "aws" {
 
 module "eks_cluster" {
   source  = "app.terraform.io/jose-merchan/eks-cluster/aws"
-  version = "~> 0.0.4"
+  version = "0.0.4"
 
   # Mandatory tags
   environment = var.environment
