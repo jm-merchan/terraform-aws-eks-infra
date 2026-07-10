@@ -8,7 +8,7 @@ provider "aws" {
 
 module "eks_cluster" {
   source  = "app.terraform.io/jose-merchan/eks-cluster/aws"
-  version = "0.0.4"
+  version = "~> 0.0.10"
 
   # Mandatory tags
   environment = var.environment
@@ -20,13 +20,15 @@ module "eks_cluster" {
   cluster_name       = var.cluster_name
   kubernetes_version = var.kubernetes_version
 
-  # Public endpoint — remote runner needs API server access
+  # Public endpoint — remote runner needs API server access.
+  # Restrict to your organisation's egress IP(s) or the HCP Terraform runner CIDR.
+  # See: https://developer.hashicorp.com/terraform/cloud-docs/architectural-details/ip-ranges
   endpoint_public_access       = true
-  endpoint_public_access_cidrs = ["0.0.0.0/0"]
+  endpoint_public_access_cidrs = var.api_allowed_cidrs
   enable_irsa                  = true
   log_retention_days           = 90
 
-  # Node group — 3 nodes so Vault HA Raft (3 replicas) can schedule
+  # Node group — 3 nodes so Vault HA Raft (3 replicas) can schedule.
   node_groups = {
     dev = {
       instance_types = ["t3.medium"]
@@ -46,14 +48,12 @@ module "eks_cluster" {
   enable_internet_access = true
   single_nat_gateway     = true
 
+  # aws-ebs-csi-driver excluded here — installed below as a standalone
+  # aws_eks_addon so that the IRSA role ARN can be wired after cluster creation.
   addons = {
     coredns    = { most_recent = true }
     kube-proxy = { most_recent = true }
     vpc-cni    = { most_recent = true, before_compute = true }
-    aws-ebs-csi-driver = {
-      most_recent              = true
-      service_account_role_arn = aws_iam_role.ebs_csi.arn
-    }
   }
 }
 
@@ -98,7 +98,98 @@ resource "aws_iam_role" "ebs_csi" {
   }
 }
 
+# AmazonEBSCSIDriverPolicyV2 is the current managed policy (V1 is deprecated)
 resource "aws_iam_role_policy_attachment" "ebs_csi" {
   role       = aws_iam_role.ebs_csi.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicyV2"
+}
+
+# KMS permissions — required because EBS volumes are encrypted with the cluster KMS key.
+resource "aws_iam_policy" "ebs_csi_kms" {
+  name_prefix = "${var.cluster_name}-ebs-csi-kms-"
+  description = "Allow EBS CSI driver to use the cluster KMS key for volume encryption"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant",
+        ]
+        Resource = [module.eks_cluster.kms_key_arn]
+        Condition = {
+          Bool = {
+            "kms:GrantIsForAWSResource" = "true"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = [module.eks_cluster.kms_key_arn]
+      }
+    ]
+  })
+
+  tags = {
+    Environment = var.environment
+    Owner       = var.owner
+    CostCenter  = var.cost_center
+    Project     = var.project
+    ManagedBy   = "Terraform"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_kms" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = aws_iam_policy.ebs_csi_kms.arn
+}
+
+################################################################################
+# EBS CSI Driver addon — installed after IRSA role is ready
+################################################################################
+
+data "aws_eks_addon_version" "ebs_csi" {
+  addon_name         = "aws-ebs-csi-driver"
+  kubernetes_version = var.kubernetes_version
+  most_recent        = true
+}
+
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name                = module.eks_cluster.cluster_name
+  addon_name                  = "aws-ebs-csi-driver"
+  addon_version               = data.aws_eks_addon_version.ebs_csi.version
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+  service_account_role_arn    = aws_iam_role.ebs_csi.arn
+  preserve                    = true
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+    delete = "30m"
+  }
+
+  tags = {
+    Environment = var.environment
+    Owner       = var.owner
+    CostCenter  = var.cost_center
+    Project     = var.project
+    ManagedBy   = "Terraform"
+  }
+
+  depends_on = [
+    module.eks_cluster,
+    aws_iam_role_policy_attachment.ebs_csi,
+    aws_iam_role_policy_attachment.ebs_csi_kms,
+  ]
 }
