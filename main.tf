@@ -2,6 +2,17 @@ provider "aws" {
   region = var.aws_region
 }
 
+provider "kubernetes" {
+  host                   = module.eks_cluster.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_cluster.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks_cluster.cluster_name, "--region", var.aws_region]
+  }
+}
+
 ################################################################################
 # EKS Cluster — private registry module (infrastructure only, no app workloads)
 ################################################################################
@@ -104,7 +115,9 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2"
 }
 
-# KMS permissions — required because EBS volumes are encrypted with the cluster KMS key.
+# KMS permissions — required because node EBS volumes are encrypted with the cluster KMS key.
+# Grant actions are in a separate statement with the kms:GrantIsForAWSResource condition
+# as required by the AWS EBS CSI driver documentation.
 resource "aws_iam_policy" "ebs_csi_kms" {
   name_prefix = "${var.cluster_name}-ebs-csi-kms-"
   description = "Allow EBS CSI driver to use the cluster KMS key for volume encryption"
@@ -160,6 +173,7 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_kms" {
 
 data "aws_eks_addon_version" "ebs_csi" {
   addon_name         = "aws-ebs-csi-driver"
+  # Static version string — cluster_version is computed and unknown at plan time
   kubernetes_version = var.kubernetes_version
   most_recent        = true
 }
@@ -172,6 +186,9 @@ resource "aws_eks_addon" "ebs_csi" {
   resolve_conflicts_on_update = "OVERWRITE"
   service_account_role_arn    = aws_iam_role.ebs_csi.arn
   preserve                    = true
+
+  # namespace_config omitted — aws-ebs-csi-driver always installs to kube-system.
+  # Specifying it is redundant and caused plan errors with older provider versions.
 
   timeouts {
     create = "30m"
@@ -192,4 +209,31 @@ resource "aws_eks_addon" "ebs_csi" {
     aws_iam_role_policy_attachment.ebs_csi,
     aws_iam_role_policy_attachment.ebs_csi_kms,
   ]
+}
+
+################################################################################
+# StorageClass gp3 — provisioned by the EBS CSI driver (aws-ebs-csi-driver).
+# EKS 1.21+ does NOT create this class automatically; it must be declared here.
+# Vault (and any other StatefulSet) uses this class for PersistentVolumeClaims.
+################################################################################
+
+resource "kubernetes_storage_class_v1" "gp3" {
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "true"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  volume_binding_mode    = "WaitForFirstConsumer"
+  allow_volume_expansion = true
+
+  parameters = {
+    type      = "gp3"
+    encrypted = "true"
+  }
+
+  depends_on = [aws_eks_addon.ebs_csi]
 }
