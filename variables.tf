@@ -50,7 +50,3 @@ variable "cluster_name" {
   default     = "eks-infra-dev"
 }
 
-variable "api_allowed_cidrs" {
-  description = "List of CIDRs allowed to reach the public Kubernetes API endpoint. Must not contain 0.0.0.0/0. Set to your HCP Terraform runner egress IPs or office CIDR."
-  type        = list(string)
-}
