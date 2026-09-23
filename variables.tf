@@ -39,9 +39,9 @@ variable "api_allowed_cidrs" {
 }
 
 variable "kubernetes_version" {
-  description = "EKS Kubernetes version"
+  description = "EKS Kubernetes version. Defaults to the latest version in standard support on Amazon EKS."
   type        = string
-  default     = "1.33"
+  default     = "1.36"
 }
 
 variable "cluster_name" {
